@@ -1,12 +1,22 @@
-import React from 'react'
+import React, { useEffect, useRef } from 'react'
 import { TripProvider, useTrip } from './context/TripContext'
 import { ThemeSwitcher } from './components/ThemeSwitcher'
 import { SearchBar } from './components/SearchBar'
 import { ItineraryTimeline } from './components/ItineraryTimeline'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { Compass } from 'lucide-react'
 
 function AppContent() {
   const { state } = useTrip()
+  const resultRef = useRef<HTMLDivElement>(null)
+
+  // Move focus to results section once a new itinerary loads so keyboard /
+  // screen-reader users don't have to manually navigate past the search form.
+  useEffect(() => {
+    if (!state.loading && state.itinerary.length > 0 && resultRef.current) {
+      resultRef.current.focus()
+    }
+  }, [state.loading, state.itinerary.length])
 
   return (
     <div className="container mx-auto min-h-screen flex flex-col items-center pt-20 pb-32">
@@ -47,7 +57,17 @@ function AppContent() {
           {state.error ? `Error: ${state.error}` : ''}
         </div>
 
-        <ItineraryTimeline />
+        {/* Focus anchor for keyboard / screen-reader navigation to results */}
+        <div
+          ref={resultRef}
+          tabIndex={-1}
+          className="outline-none"
+          aria-hidden={state.itinerary.length === 0}
+        />
+
+        <ErrorBoundary context="ItineraryTimeline">
+          <ItineraryTimeline />
+        </ErrorBoundary>
       </main>
 
       {/* Footer */}
