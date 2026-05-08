@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { useTrip } from '../context/TripContext';
+import { ConstraintsPanel } from './ConstraintsPanel';
 import { Search, Loader2 } from 'lucide-react';
+
+const QUICK_DESTINATIONS = ['Thanjavur', 'Goa', 'Ladakh', 'Bali'];
 
 export const SearchBar = () => {
     const [query, setQuery] = useState('');
@@ -9,7 +12,7 @@ export const SearchBar = () => {
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         if (query.trim()) {
-            planTrip(query);
+            planTrip(query, state.constraints);
         }
     };
 
@@ -27,30 +30,41 @@ export const SearchBar = () => {
                 <button
                     type="submit"
                     disabled={state.loading}
-                    aria-label={state.loading ? "Generating itinerary" : "Search trip"}
+                    aria-label={state.loading ? 'Generating itinerary' : 'Search trip'}
                     className="absolute right-3 top-1/2 -translate-y-1/2 p-2 bg-amber-500 hover:bg-amber-400 text-black rounded-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     {state.loading ? (
-                        <Loader2 className="w-6 h-6 animate-spin" />
+                        <Loader2 className="w-6 h-6 animate-spin" aria-hidden="true" />
                     ) : (
-                        <Search className="w-6 h-6" />
+                        <Search className="w-6 h-6" aria-hidden="true" />
                     )}
                 </button>
             </form>
+
             {state.error && (
-                <p className="mt-2 text-red-400 text-center text-sm">{state.error}</p>
+                <p role="alert" className="mt-2 text-red-400 text-center text-sm">{state.error}</p>
             )}
 
-            <div className="mt-6 flex flex-wrap justify-center gap-2">
-                {['Thanjavur', 'Goa', 'Ladakh', 'Bali'].map(dest => (
+            {/* Quick destination chips */}
+            <div className="mt-4 flex flex-wrap justify-center gap-2" aria-label="Quick destination suggestions">
+                {QUICK_DESTINATIONS.map((dest) => (
                     <button
                         key={dest}
-                        onClick={() => { setQuery(dest); planTrip(dest); }}
+                        type="button"
+                        onClick={() => {
+                            setQuery(dest);
+                            planTrip(dest, state.constraints);
+                        }}
                         className="px-4 py-1.5 bg-white/5 hover:bg-white/10 border border-white/5 rounded-full text-[10px] font-bold text-white/40 uppercase tracking-widest transition-all"
                     >
                         {dest}
                     </button>
                 ))}
+            </div>
+
+            {/* Constraints panel below chips */}
+            <div className="mt-4">
+                <ConstraintsPanel />
             </div>
         </div>
     );
