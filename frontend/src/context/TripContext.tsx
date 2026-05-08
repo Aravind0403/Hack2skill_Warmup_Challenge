@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useRef, ReactNode } from 'react';
 
 export type Vibe = 'spiritual' | 'adventure' | 'beach' | 'culture' | 'luxury';
 
@@ -27,30 +27,45 @@ interface TripContextType {
 
 const TripContext = createContext<TripContextType | undefined>(undefined);
 
+const DEFAULT_STATE: TripState = {
+    destination: '',
+    budget: 'moderate',
+    pace: 'balanced',
+    vibe: 'adventure',
+    itinerary: [],
+    loading: false,
+    error: null,
+};
+
 export const TripProvider = ({ children }: { children: ReactNode }) => {
-    const [state, setState] = useState<TripState>({
-        destination: '',
-        budget: 'moderate',
-        pace: 'balanced',
-        vibe: 'adventure',
-        itinerary: [],
-        loading: false,
-        error: null,
-    });
+    const [state, setState] = useState<TripState>(DEFAULT_STATE);
+    const abortRef = useRef<AbortController | null>(null);
 
     const setTripData = (data: Partial<TripState>) => {
         setState((prev) => ({ ...prev, ...data }));
     };
 
     const planTrip = async (query: string) => {
+        // Cancel any in-flight request before starting a new one
+        abortRef.current?.abort();
+        const controller = new AbortController();
+        abortRef.current = controller;
+
         setState((prev) => ({ ...prev, loading: true, error: null }));
+
         try {
             const response = await fetch('/api/plan', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ query }),
+                signal: controller.signal,
             });
-            if (!response.ok) throw new Error('Failed to fetch itinerary');
+
+            if (!response.ok) {
+                const body = await response.json().catch(() => ({}));
+                throw new Error(body.error || `Request failed with status ${response.status}`);
+            }
+
             const data = await response.json();
             setState((prev) => ({
                 ...prev,
@@ -62,6 +77,7 @@ export const TripProvider = ({ children }: { children: ReactNode }) => {
                 loading: false,
             }));
         } catch (err) {
+            if ((err as Error).name === 'AbortError') return; // intentional cancel — don't update state
             setState((prev) => ({ ...prev, loading: false, error: (err as Error).message }));
         }
     };
