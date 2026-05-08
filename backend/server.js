@@ -6,16 +6,13 @@ const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { VertexAI } = require("@google-cloud/vertexai");
 const { Logging } = require('@google-cloud/logging');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
 // ── Startup warnings ───────────────────────────────────────────────────────────
-if (!process.env.GEMINI_API_KEY) {
-    console.warn('[WARN] GEMINI_API_KEY is not set. AI features will return 503.');
-}
 if (!process.env.GOOGLE_MAPS_API_KEY) {
     console.warn('[WARN] GOOGLE_MAPS_API_KEY is not set. Places features will return 503.');
 }
@@ -81,9 +78,13 @@ function logInfo(message) {
     console.info('[INFO]', message);
 }
 
-// ── Gemini setup ───────────────────────────────────────────────────────────────
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-lite" });
+// ── Gemini via Vertex AI ───────────────────────────────────────────────────────
+// Uses project service account credentials — no API key needed.
+// On Cloud Run credentials are automatic; locally run:
+//   gcloud auth application-default login
+const GCP_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || 'hack2skill-hackathon-495705';
+const vertexAI = new VertexAI({ project: GCP_PROJECT, location: 'us-central1' });
+const model = vertexAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
 // ── WMO weather code → label + emoji ──────────────────────────────────────────
 const WMO = {
@@ -172,10 +173,6 @@ app.post('/api/plan', async (req, res) => {
     if (trimmed.length === 0) return res.status(400).json({ error: 'query must not be empty.' });
     if (trimmed.length > 500) return res.status(400).json({ error: 'query must be 500 characters or fewer.' });
 
-    if (!process.env.GEMINI_API_KEY) {
-        return res.status(503).json({ error: 'AI service is not configured. Set GEMINI_API_KEY.' });
-    }
-
     const sanitized = sanitizeQuery(trimmed);
     logInfo(`Planning trip: "${sanitized}"`);
 
@@ -216,8 +213,8 @@ The itinerary array must have exactly ${days} objects.
 `;
 
     try {
-        const result = await model.generateContent(prompt);
-        const text = result.response.text();
+        const result = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: prompt }] }] });
+        const text = result.response.candidates[0].content.parts[0].text;
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error('No JSON found in Gemini response');
         const jsonData = JSON.parse(jsonMatch[0]);
@@ -237,9 +234,6 @@ The itinerary array must have exactly ${days} objects.
     } catch (err) {
         console.error('Gemini Error:', err);
         res.setHeader('Cache-Control', 'no-store');
-        if (err.status === 429) {
-            return res.status(429).json({ error: 'Gemini quota exceeded. Please wait a minute and try again.' });
-        }
         return res.status(502).json({ error: 'Failed to generate itinerary. Please try again.' });
     }
 });
@@ -250,9 +244,6 @@ app.post('/api/replan-day', async (req, res) => {
 
     if (!destination || !day || !dayTitle) {
         return res.status(400).json({ error: 'destination, day, and dayTitle are required.' });
-    }
-    if (!process.env.GEMINI_API_KEY) {
-        return res.status(503).json({ error: 'AI service is not configured. Set GEMINI_API_KEY.' });
     }
 
     const constraintRules = buildConstraintRules(constraints);
@@ -278,8 +269,8 @@ Return ONLY this raw JSON (no markdown):
 `;
 
     try {
-        const result = await model.generateContent(prompt);
-        const text = result.response.text();
+        const result = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: prompt }] }] });
+        const text = result.response.candidates[0].content.parts[0].text;
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error('No JSON in Gemini response');
         const updatedDay = JSON.parse(jsonMatch[0]);
