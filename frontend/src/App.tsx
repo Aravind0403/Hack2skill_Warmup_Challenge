@@ -24,6 +24,19 @@ function App() {
           </div>
 
           <SearchBar />
+          
+          {/* Action Bar */}
+          {state.itinerary.length > 0 && (
+            <div className="flex justify-center mb-8">
+              <button 
+                onClick={() => window.print()}
+                className="px-6 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-white/60 text-xs font-bold tracking-widest uppercase transition-all"
+              >
+                Export Itinerary
+              </button>
+            </div>
+          )}
+
           <ItineraryTimeline />
 
           {/* Footer Decoration */}

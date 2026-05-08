@@ -4,6 +4,7 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install
 COPY frontend/ .
+RUN npm test
 RUN npm run build
 
 # Stage 2: Build the backend and serve the application

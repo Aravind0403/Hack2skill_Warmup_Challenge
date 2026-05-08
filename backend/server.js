@@ -1,71 +1,100 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const helmet = require('helmet');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { Logging } = require('@google-cloud/logging');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// Security: Helmet for secure headers
+app.use(helmet({
+    contentSecurityPolicy: false, // Disable for easier demo/static serving
+}));
+
+// Efficiency: Gzip compression
+app.use(compression());
+
+// Security: Rate limiting
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100 // limit each IP to 100 requests per windowMs
+});
+app.use('/api/', limiter);
+
+// Google Services: Cloud Logging
+const logging = new Logging();
+const log = logging.log('travel-engine-logs');
+
+async function logInfo(message) {
+    const metadata = { resource: { type: 'global' } };
+    const entry = log.entry(metadata, { message });
+    await log.write(entry).catch(console.error);
+}
+
+// Initialize Gemini
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
 app.use(cors());
 app.use(express.json());
-
-// Serve static files from the frontend build
 app.use(express.static(path.join(__dirname, '../frontend/dist')));
 
-// Health check
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Plan API
-app.post('/api/plan', (req, res) => {
+app.post('/api/plan', async (req, res) => {
     const { query } = req.body;
-    console.log(`Received plan request: ${query}`);
+    await logInfo(`Planning trip for query: ${query}`);
 
-    // Mock intent parsing
-    const lowerQuery = query.toLowerCase();
-    let destination = "Unknown";
-    let vibe = "adventure";
-    let budget = "moderate";
-    let pace = "balanced";
+    try {
+        const prompt = `
+            You are a world-class travel planner. Based on the user request: "${query}", 
+            generate a structured JSON travel itinerary.
+            
+            JSON format:
+            {
+                "destination": "Name of destination",
+                "vibe": "one of: spiritual, adventure, beach, culture, luxury",
+                "budget": "string",
+                "pace": "string",
+                "itinerary": [
+                    {
+                        "day": 1,
+                        "title": "Day Title",
+                        "activities": ["Activity 1", "Activity 2", "Activity 3"]
+                    }
+                ]
+            }
+            Return ONLY the raw JSON.
+        `;
 
-    if (lowerQuery.includes("thanjavur")) destination = "Thanjavur";
-    if (lowerQuery.includes("spiritual")) vibe = "spiritual";
-    if (lowerQuery.includes("adventure")) vibe = "adventure";
-    if (lowerQuery.includes("beach")) vibe = "beach";
-    if (lowerQuery.includes("budget")) budget = "budget";
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text();
+        
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        const jsonData = JSON.parse(jsonMatch ? jsonMatch[0] : text);
 
-    // Mock Itinerary
-    const itinerary = [
-        {
-            day: 1,
-            title: `Arrival in ${destination}`,
-            activities: ["Check-in to eco-stay", "Evening temple visit", "Local street food exploration"],
-            vibe: vibe
-        },
-        {
-            day: 2,
-            title: "Cultural Deep Dive",
-            activities: ["Morning meditation session", "Heritage walk", "Traditional craft workshop"],
-            vibe: vibe
-        },
-        {
-            day: 3,
-            title: "Departure",
-            activities: ["Sunrise photography", "Souvenir shopping", "Departure to next destination"],
-            vibe: vibe
-        }
-    ];
-
-    res.json({
-        destination,
-        vibe,
-        budget,
-        pace,
-        itinerary
-    });
+        res.json(jsonData);
+    } catch (err) {
+        console.error("Gemini Error:", err);
+        res.json({
+            destination: "Exploration Mode",
+            vibe: "adventure",
+            budget: "flexible",
+            pace: "dynamic",
+            itinerary: [
+                { day: 1, title: "Adventure Awaits", activities: ["AI integration pending", "Check API keys", "Start exploring manually"] }
+            ]
+        });
+    }
 });
 
-// Fallback to index.html for React SPA
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
 });
