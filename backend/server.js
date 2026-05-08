@@ -6,7 +6,7 @@ const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
-const { VertexAI } = require('@google-cloud/vertexai');
+const { GoogleAuth } = require('google-auth-library');
 const { Logging } = require('@google-cloud/logging');
 
 const app = express();
@@ -90,13 +90,54 @@ function logInfo(message) {
     console.info('[INFO]', message);
 }
 
-// ── Gemini via Vertex AI ───────────────────────────────────────────────────────
-// Uses project service account credentials — no API key needed.
-// On Cloud Run credentials are automatic; locally run:
-//   gcloud auth application-default login
-const GCP_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || 'hack2skill-hackathon-495705';
-const vertexAI = new VertexAI({ project: GCP_PROJECT, location: 'us-central1' });
-const model = vertexAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+// ── Gemini via Generative Language API (paid tier, OAuth) ─────────────────────
+// On Cloud Run the default service account provides ADC automatically.
+// Requests authenticated by a service account use the PAID-tier quota
+// (10 000 req/day for gemini-2.0-flash), bypassing the free-tier limit of 0
+// that affects API keys from AI Studio.
+// Locally: set GEMINI_API_KEY in .env as a fallback.
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || null;
+const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+
+const geminiAuth = new GoogleAuth({
+    scopes: ['https://www.googleapis.com/auth/generative-language'],
+});
+
+/**
+ * Calls the Gemini 2.0 Flash model with the given prompt text.
+ * Prefers service-account OAuth (paid tier); falls back to API key if set.
+ * @param {string} prompt
+ * @returns {Promise<string>} Model response text.
+ */
+async function callGemini(prompt) {
+    let headers = { 'Content-Type': 'application/json' };
+    let url = GEMINI_ENDPOINT;
+
+    try {
+        // ADC is available on Cloud Run; this fails locally without credentials.
+        const client = await geminiAuth.getClient();
+        const { token } = await client.getAccessToken();
+        headers['Authorization'] = `Bearer ${token}`;
+    } catch {
+        // No ADC — fall back to API key for local development.
+        if (!GEMINI_API_KEY) throw new Error('No Gemini credentials available. Set GEMINI_API_KEY for local dev.');
+        url = `${GEMINI_ENDPOINT}?key=${GEMINI_API_KEY}`;
+    }
+
+    const body = JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    });
+
+    const resp = await fetch(url, { method: 'POST', headers, body });
+    const data = await resp.json();
+
+    if (!resp.ok) {
+        throw new Error(data.error?.message || `Gemini API error ${resp.status}`);
+    }
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error('Empty response from Gemini');
+    return text;
+}
 
 // ── WMO weather code → label + emoji ──────────────────────────────────────────
 const WMO = {
@@ -280,8 +321,7 @@ The itinerary array must have exactly ${days} objects.
 `;
 
     try {
-        const result = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: prompt }] }] });
-        const text = result.response.candidates[0].content.parts[0].text;
+        const text = await callGemini(prompt);
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error('No JSON found in Gemini response');
         const jsonData = JSON.parse(jsonMatch[0]);
@@ -350,8 +390,7 @@ Return ONLY this raw JSON (no markdown):
 `;
 
     try {
-        const result = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: prompt }] }] });
-        const text = result.response.candidates[0].content.parts[0].text;
+        const text = await callGemini(prompt);
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error('No JSON in Gemini response');
         const updatedDay = JSON.parse(jsonMatch[0]);
