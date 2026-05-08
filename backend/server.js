@@ -63,11 +63,15 @@ const limiter = rateLimit({
 app.use('/api/', limiter);
 
 // ── Google Cloud Logging ───────────────────────────────────────────────────────
+// K_SERVICE is automatically set by Cloud Run — only enable GCP logging there.
+// Locally we fall through to console.info to avoid credential errors.
 let log = null;
-try {
-    const logging = new Logging();
-    log = logging.log('travel-engine-logs');
-} catch { /* no GCP credentials locally — console fallback */ }
+if (process.env.K_SERVICE) {
+    try {
+        const logging = new Logging();
+        log = logging.log('travel-engine-logs');
+    } catch { /* ignore — console fallback below */ }
+}
 
 function logInfo(message) {
     if (log) {
