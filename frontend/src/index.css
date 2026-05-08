@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --theme-bg: #09090b; /* Zinc 950 */
+    --theme-accent: #f59e0b; /* Amber 500 */
+    --theme-text: #f4f4f5; /* Zinc 100 */
+  }
+
+  .theme-spiritual {
+    --theme-bg: #1c1917; /* Stone 900 */
+    --theme-accent: #d97706; /* Amber 600 */
+  }
+
+  .theme-adventure {
+    --theme-bg: #0f172a; /* Slate 900 */
+    --theme-accent: #22c55e; /* Green 500 */
+  }
+
+  .theme-beach {
+    --theme-bg: #083344; /* Cyan 950 */
+    --theme-accent: #06b6d4; /* Cyan 500 */
+  }
+
+  body {
+    background-color: var(--theme-bg);
+    color: var(--theme-text);
+    transition: background-color 0.8s ease;
+  }
+}
+
+.bg-theme-bg {
+  background-color: var(--theme-bg);
+}
+
+.bg-theme-accent {
+  background-color: var(--theme-accent);
+}
+
+.text-theme-accent {
+  color: var(--theme-accent);
+}
+
+.from-theme-accent\/20 {
+  --tw-gradient-from: rgb(var(--theme-accent-rgb) / 0.2);
+}
+
+/* Custom radial gradient helper */
+.bg-gradient-radial {
+  background-image: radial-gradient(var(--tw-gradient-stops));
+}
