@@ -11,14 +11,19 @@ const Pill = ({
     active,
     onClick,
     children,
+    label,
 }: {
     active: boolean;
     onClick: () => void;
     children: React.ReactNode;
+    /** Accessible label used when button text alone is insufficient context. */
+    label?: string;
 }) => (
     <button
         type="button"
         onClick={onClick}
+        aria-pressed={active}
+        aria-label={label}
         className={`px-3 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider transition-all duration-200 border ${
             active
                 ? 'bg-amber-500 border-amber-500 text-black'
@@ -132,7 +137,7 @@ export const ConstraintsPanel = () => {
                         <p className="text-xs font-bold text-white/50 uppercase tracking-wider mb-2">Group Type</p>
                         <div className="flex flex-wrap gap-2" role="group" aria-label="Group type">
                             {GROUP_TYPES.map((g) => (
-                                <Pill key={g} active={c.groupType === g} onClick={() => setConstraint({ groupType: g })}>
+                                <Pill key={g} active={c.groupType === g} onClick={() => setConstraint({ groupType: g })} label={`Group type: ${g}`}>
                                     {g}
                                 </Pill>
                             ))}
@@ -144,7 +149,7 @@ export const ConstraintsPanel = () => {
                         <p className="text-xs font-bold text-white/50 uppercase tracking-wider mb-2">Pace</p>
                         <div className="flex flex-wrap gap-2" role="group" aria-label="Trip pace">
                             {PACE_OPTIONS.map((p) => (
-                                <Pill key={p} active={c.pace === p} onClick={() => setConstraint({ pace: p })}>
+                                <Pill key={p} active={c.pace === p} onClick={() => setConstraint({ pace: p })} label={`Trip pace: ${p}`}>
                                     {p}
                                 </Pill>
                             ))}
@@ -160,6 +165,7 @@ export const ConstraintsPanel = () => {
                                     key={d}
                                     active={d === 'None' ? c.dietary.length === 0 : c.dietary.includes(d)}
                                     onClick={() => toggleDietary(d)}
+                                    label={d === 'None' ? 'No dietary restrictions' : `Dietary: ${d}`}
                                 >
                                     {d}
                                 </Pill>

@@ -6,7 +6,7 @@ const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
-const { VertexAI } = require("@google-cloud/vertexai");
+const { VertexAI } = require('@google-cloud/vertexai');
 const { Logging } = require('@google-cloud/logging');
 
 const app = express();
@@ -17,13 +17,18 @@ if (!process.env.GOOGLE_MAPS_API_KEY) {
     console.warn('[WARN] GOOGLE_MAPS_API_KEY is not set. Places features will return 503.');
 }
 
+// ── Trust proxy (required for Cloud Run / load-balanced environments) ──────────
+// Cloud Run sits behind a Google-managed load balancer that sets X-Forwarded-For.
+// Without this, express-rate-limit throws a ValidationError on every request.
+app.set('trust proxy', 1);
+
 // ── Request ID ─────────────────────────────────────────────────────────────────
 app.use((_req, res, next) => {
     res.setHeader('X-Request-ID', crypto.randomUUID());
     next();
 });
 
-// ── Security ───────────────────────────────────────────────────────────────────
+// ── Security headers ───────────────────────────────────────────────────────────
 app.use(helmet({
     contentSecurityPolicy: {
         directives: {
@@ -35,8 +40,11 @@ app.use(helmet({
             fontSrc: ["'self'"],
             objectSrc: ["'none'"],
             frameSrc: ["'none'"],
+            upgradeInsecureRequests: [],
         },
     },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    crossOriginResourcePolicy: { policy: 'same-origin' },
 }));
 
 app.use(compression());
@@ -70,6 +78,10 @@ if (process.env.K_SERVICE) {
     } catch { /* ignore — console fallback below */ }
 }
 
+/**
+ * Writes an informational log entry to Cloud Logging (Cloud Run) or console.
+ * @param {string} message - Human-readable log message.
+ */
 function logInfo(message) {
     if (log) {
         const entry = log.entry({ resource: { type: 'global' } }, { message });
@@ -98,6 +110,12 @@ const WMO = {
     95: ['Thunderstorm', '⛈️'],  96: ['Hail storm', '⛈️'],    99: ['Heavy hail', '⛈️'],
 };
 
+/**
+ * Converts a WMO weather code and temperature to a human-readable weather object.
+ * @param {number} code - WMO weather code.
+ * @param {number} tempC - Temperature in degrees Celsius.
+ * @returns {{ condition: string, emoji: string, tempC: number }}
+ */
 function wmoToWeather(code, tempC) {
     const [condition, emoji] = WMO[code] || ['Unknown', '🌡️'];
     return { condition, emoji, tempC: Math.round(tempC) };
@@ -107,17 +125,58 @@ function wmoToWeather(code, tempC) {
 const CACHE_MAX = 100;
 const responseCache = new Map();
 
+/** @param {string} key @returns {object|null} */
 function cacheGet(key) { return responseCache.get(key) || null; }
+
+/**
+ * Stores a value in the bounded FIFO cache, evicting the oldest entry when full.
+ * @param {string} key
+ * @param {object} value
+ */
 function cacheSet(key, value) {
     if (responseCache.size >= CACHE_MAX) responseCache.delete(responseCache.keys().next().value);
     responseCache.set(key, value);
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+/**
+ * Strips ASCII control characters from a string and trims whitespace.
+ * @param {string} raw - Untrusted user input.
+ * @returns {string} Sanitized string safe to embed in prompts.
+ */
 function sanitizeQuery(raw) {
     return raw.replace(/[\x00-\x1F\x7F]/g, '').trim();
 }
 
+/**
+ * Validates and normalises an inbound constraints object.
+ * Returns null when the object is absent or structurally invalid.
+ * @param {unknown} c - Raw value from request body.
+ * @returns {object|null} Sanitized constraints or null.
+ */
+function validateConstraints(c) {
+    if (!c || typeof c !== 'object') return null;
+    const VALID_CURRENCIES = ['₹', '$', '€'];
+    const VALID_GROUP = ['Solo', 'Couple', 'Family', 'Group'];
+    const VALID_PACE = ['Relaxed', 'Balanced', 'Packed'];
+
+    return {
+        durationDays: Math.max(1, Math.min(14, Number.isFinite(Number(c.durationDays)) ? Number(c.durationDays) : 5)),
+        budgetAmount: Math.max(0, Number(c.budgetAmount) || 0),
+        budgetCurrency: VALID_CURRENCIES.includes(c.budgetCurrency) ? c.budgetCurrency : '₹',
+        groupType: VALID_GROUP.includes(c.groupType) ? c.groupType : 'Solo',
+        pace: VALID_PACE.includes(c.pace) ? c.pace : 'Balanced',
+        wheelchairFriendly: Boolean(c.wheelchairFriendly),
+        dietary: Array.isArray(c.dietary) ? c.dietary.filter((d) => typeof d === 'string').slice(0, 5) : [],
+    };
+}
+
+/**
+ * Builds a HARD RULES block to inject into the Gemini prompt.
+ * @param {object|null} c - Validated constraints object.
+ * @returns {string} Formatted rule block, or empty string when constraints absent.
+ */
 function buildConstraintRules(c) {
     if (!c) return '';
     const lines = [
@@ -131,6 +190,13 @@ function buildConstraintRules(c) {
     return `\nHARD RULES (follow exactly):\n${lines.join('\n')}\n`;
 }
 
+/**
+ * Fetches a multi-day weather forecast for the given destination using Open-Meteo.
+ * Returns null silently on any network or parsing error.
+ * @param {string} destination - City or region name.
+ * @param {number} days - Number of forecast days (clamped to 1–16).
+ * @returns {Promise<Array<{condition:string,emoji:string,tempC:number}>|null>}
+ */
 async function fetchWeather(destination, days) {
     try {
         const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(destination)}&count=1&language=en&format=json`;
@@ -164,7 +230,7 @@ app.get('/health', (_req, res) => {
 
 // ── POST /api/plan ─────────────────────────────────────────────────────────────
 app.post('/api/plan', async (req, res) => {
-    const { query, constraints } = req.body;
+    const { query, constraints: rawConstraints } = req.body;
 
     if (!query || typeof query !== 'string') {
         return res.status(400).json({ error: 'query is required and must be a string.' });
@@ -174,6 +240,7 @@ app.post('/api/plan', async (req, res) => {
     if (trimmed.length > 500) return res.status(400).json({ error: 'query must be 500 characters or fewer.' });
 
     const sanitized = sanitizeQuery(trimmed);
+    const constraints = validateConstraints(rawConstraints);
     logInfo(`Planning trip: "${sanitized}"`);
 
     const cacheKey = `${sanitized.toLowerCase()}|${JSON.stringify(constraints || {})}`;
@@ -240,27 +307,41 @@ The itinerary array must have exactly ${days} objects.
 
 // ── POST /api/replan-day ───────────────────────────────────────────────────────
 app.post('/api/replan-day', async (req, res) => {
-    const { destination, day, dayTitle, activities, currentWeather, constraints } = req.body;
+    const { destination, day, dayTitle, activities, currentWeather, constraints: rawConstraints } = req.body;
 
-    if (!destination || !day || !dayTitle) {
-        return res.status(400).json({ error: 'destination, day, and dayTitle are required.' });
+    if (!destination || typeof destination !== 'string' || destination.trim().length === 0) {
+        return res.status(400).json({ error: 'destination is required and must be a non-empty string.' });
+    }
+    if (day === undefined || day === null || isNaN(Number(day)) || Number(day) < 1) {
+        return res.status(400).json({ error: 'day is required and must be a positive number.' });
+    }
+    if (!dayTitle || typeof dayTitle !== 'string' || dayTitle.trim().length === 0) {
+        return res.status(400).json({ error: 'dayTitle is required and must be a non-empty string.' });
+    }
+    if (!Array.isArray(activities)) {
+        return res.status(400).json({ error: 'activities must be an array.' });
     }
 
+    const constraints = validateConstraints(rawConstraints);
     const constraintRules = buildConstraintRules(constraints);
     const weatherNote = currentWeather
         ? `Current weather: ${currentWeather.emoji} ${currentWeather.condition}, ${currentWeather.tempC}°C`
         : '';
 
+    const safeDestination = sanitizeQuery(String(destination));
+    const safeDayTitle = sanitizeQuery(String(dayTitle));
+    const safeActivities = activities.map((a) => sanitizeQuery(String(a)));
+
     const prompt = `
-You are a travel planner. Replan only Day ${day} of a trip to ${destination}.
+You are a travel planner. Replan only Day ${Number(day)} of a trip to ${safeDestination}.
 ${weatherNote}
 ${constraintRules}
-Original activities were: ${activities.join(', ')}.
+Original activities were: ${safeActivities.join(', ')}.
 Create fresh, weather-appropriate activities for this single day.
 
 Return ONLY this raw JSON (no markdown):
 {
-  "day": ${day},
+  "day": ${Number(day)},
   "title": "Updated day title",
   "activities": ["Activity 1", "Activity 2", "Activity 3"],
   "estimated_cost": "amount string",
@@ -276,9 +357,9 @@ Return ONLY this raw JSON (no markdown):
         const updatedDay = JSON.parse(jsonMatch[0]);
 
         // Re-fetch weather for that day
-        const weatherList = await fetchWeather(destination, day);
-        if (weatherList && weatherList[day - 1]) {
-            updatedDay.weather = weatherList[day - 1];
+        const weatherList = await fetchWeather(safeDestination, Number(day));
+        if (weatherList && weatherList[Number(day) - 1]) {
+            updatedDay.weather = weatherList[Number(day) - 1];
         }
 
         return res.json(updatedDay);
@@ -342,4 +423,4 @@ const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
 
-module.exports = { app, server };
+module.exports = { app, server, sanitizeQuery, validateConstraints, buildConstraintRules, wmoToWeather };
